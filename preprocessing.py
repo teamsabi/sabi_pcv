@@ -79,12 +79,15 @@ print("Kelas yang terdeteksi:", train_data.class_indices)
 model = Sequential([
     Conv2D(32, (3, 3), activation='relu', input_shape=(150, 150, 3)),
     MaxPooling2D(2, 2),
+    Dropout(0.5),
 
     Conv2D(64, (3, 3), activation='relu'),
     MaxPooling2D(2, 2),
+    Dropout(0.5),
 
     Conv2D(128, (3, 3), activation='relu'),
     MaxPooling2D(2, 2),
+    Dropout(0.5),
 
     Flatten(),
     Dense(128, activation='relu'),
@@ -97,6 +100,19 @@ model.compile(
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
+
+# --------------------------------------------------
+# Tampilkan jumlah data awal
+# --------------------------------------------------
+train_counts_init = {'Daun Sehat': 644, 'Bercak Daun': 453, 'Layu Daun': 354, 'Daun Keriting': 719}
+val_counts_init   = {'Daun Sehat': 110, 'Bercak Daun': 181, 'Layu Daun': 90, 'Daun Keriting': 193}
+test_counts_init  = {'Daun Sehat': 85, 'Bercak Daun': 40, 'Layu Daun': 50, 'Daun Keriting': 90}
+
+print("\nJumlah Data Awal per Kelas:")
+print("Training :", train_counts_init, "=> Total:", sum(train_counts_init.values()))
+print("Validation :", val_counts_init, "=> Total:", sum(val_counts_init.values()))
+print("Test :", test_counts_init, "=> Total:", sum(test_counts_init.values()))
+print("TOTAL DATA AWAL :", sum(train_counts_init.values()) + sum(val_counts_init.values()) + sum(test_counts_init.values()))
 
 # --------------------------------------------------
 # Training Model
@@ -112,7 +128,16 @@ history = model.fit(
 # Evaluasi Model
 # --------------------------------------------------
 test_loss, test_acc = model.evaluate(test_data)
-print(f"\n Akurasi pada data test: {test_acc*100:.2f}%")
+print(f"\nAkurasi pada data test: {test_acc*100:.2f}%")
+
+# --------------------------------------------------
+# Tampilkan jumlah data setelah preprocessing / batch
+# --------------------------------------------------
+print("\nJumlah Data Setelah Preprocessing / Batch (Efektif digunakan):")
+print(f"Training : {train_data.n} gambar")
+print(f"Validation : {val_data.n} gambar")
+print(f"Test : {test_data.n} gambar")
+print(f"TOTAL DATA EFEKTIF : {train_data.n + val_data.n + test_data.n} gambar")
 
 # --------------------------------------------------
 # Visualisasi Hasil Training
