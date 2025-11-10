@@ -1,71 +1,82 @@
-from flask import Flask, request, jsonify
+import cv2
+import numpy as np
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
-import numpy as np
-import os
-from werkzeug.utils import secure_filename
-
-app = Flask(__name__)
+import time
+import requests
+from datetime import datetime
 
 # --------------------------------------------------
-# Load Model Sekali di Awal
+# Load model CNN
 # --------------------------------------------------
-MODEL_PATH = "sabi_cnn_model.h5"
-model = load_model(MODEL_PATH)
+model = load_model('sabi_cnn_model.h5')
 labels = ['Bercak Daun', 'Daun Keriting', 'Daun Sehat', 'Layu Daun']
 
-# Folder sementara untuk menyimpan gambar upload
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-@app.route('/')
-def index():
-    return "Flask API SABI sudah aktif!"
+# --------------------------------------------------
+# Endpoint API Laravel
+# --------------------------------------------------
+API_URL = "http://localhost:8000/api/deteksi"  # Ganti dengan URL API Laravel kamu
 
 # --------------------------------------------------
-# Endpoint untuk Prediksi 4 Gambar
+# Inisialisasi webcam
 # --------------------------------------------------
-@app.route('/predict', methods=['POST'])
-def predict():
-    files = request.files.getlist("images")  # Ambil semua file upload
-    if len(files) == 0:
-        return jsonify({'error': 'Tidak ada file yang diupload'}), 400
+camera = cv2.VideoCapture(0)  # 0 = default webcam
 
-    predictions = []
-    for file in files:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
+if not camera.isOpened():
+    print("Webcam tidak ditemukan!")
+    exit()
 
-        # Preprocessing gambar
-        img = image.load_img(file_path, target_size=(150, 150))
-        img_array = image.img_to_array(img) / 255.0
-        img_array = np.expand_dims(img_array, axis=0)
+print("Sistem monitoring otomatis dimulai...\n")
 
-        # Prediksi
-        pred = model.predict(img_array)
-        class_index = np.argmax(pred)
-        confidence = float(np.max(pred))
+# --------------------------------------------------
+# Fungsi ambil gambar dan klasifikasi
+# --------------------------------------------------
+def capture_and_predict():
+    ret, frame = camera.read()
+    if not ret:
+        print("Gagal menangkap gambar.")
+        return
 
-        predictions.append({
-            'nama_file': filename,
-            'hasil': labels[class_index],
-            'keyakinan': round(confidence * 100, 2)
+    # Simpan gambar dengan timestamp
+    filename = f"capture_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    cv2.imwrite(filename, frame) 
+
+    # Preprocessing untuk CNN
+    img = cv2.resize(frame, (150, 150))
+    img_array = image.img_to_array(img) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+
+    # Prediksi
+    pred = model.predict(img_array)
+    class_index = np.argmax(pred)
+    label = labels[class_index]
+    confidence = np.max(pred) * 100
+
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {label} ({confidence:.2f}%)")
+
+    # Kirim hasil ke API Laravel
+    try:
+        response = requests.post(API_URL, json={
+            "nama_file": filename,
+            "hasil_deteksi": label,
+            "akurasi": round(confidence, 2),
+            "waktu": datetime.now().isoformat()
         })
+        if response.status_code == 200:
+            print("Hasil berhasil dikirim ke server.\n")
+        else:
+            print(f"Gagal kirim hasil ke server. Status: {response.status_code}")
+    except Exception as e:
+        print("Gagal mengirim ke server:", e)
 
-    # Hitung hasil dominan dari 4 gambar
-    hasil_akhir = {}
-    for p in predictions:
-        hasil_akhir[p['hasil']] = hasil_akhir.get(p['hasil'], 0) + 1
-
-    # Ambil hasil terbanyak (mayoritas)
-    penyakit_dominan = max(hasil_akhir, key=hasil_akhir.get)
-
-    return jsonify({
-        'status': 'success',
-        'hasil_masing': predictions,
-        'hasil_dominan': penyakit_dominan
-    })
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# --------------------------------------------------
+# Loop tiap 1 jam (3600 detik)
+# --------------------------------------------------
+try:
+    while True:
+        capture_and_predict()
+        time.sleep(3600)  # jeda 1 jam
+except KeyboardInterrupt:
+    print("Monitoring dihentikan secara manual.")
+    camera.release()
+    cv2.destroyAllWindows()
