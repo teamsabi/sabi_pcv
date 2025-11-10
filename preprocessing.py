@@ -1,59 +1,15 @@
 import os
-import tensorflow as tf
+import numpy as np
+import matplotlib.pyplot as plt
+from ultralytics import YOLO
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import (Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization)
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from sklearn.metrics import classification_report, confusion_matrix
-import matplotlib.pyplot as plt
-import numpy as np
-
-# --------------------------------------------------
-# INFORMASI JUMLAH DATASET SEBELUM AUGMENTASI
-# --------------------------------------------------
-print("=== JUMLAH DATASET SEBELUM AUGMENTASI ===")
-train_counts = {
-    "Daun Sehat": 644,
-    "Bercak Daun": 453,
-    "Layu Daun": 354,
-    "Daun Keriting": 719
-}
-test_counts = {
-    "Daun Sehat": 85,
-    "Bercak Daun": 40,
-    "Layu Daun": 50,
-    "Daun Keriting": 90
-}
-val_counts = {
-    "Daun Sehat": 110,
-    "Bercak Daun": 181,
-    "Layu Daun": 90,
-    "Daun Keriting": 193
-}
-
-train_total = sum(train_counts.values())
-test_total = sum(test_counts.values())
-val_total = sum(val_counts.values())
-grand_total = train_total + test_total + val_total
-
-print(f"Train: {train_total} data")
-print(f"Valid: {val_total} data")
-print(f"Test:  {test_total} data")
-print(f"TOTAL: {grand_total} data\n")
-
-# --------------------------------------------------
-# ASUMSI: AUGMENTASI MENINGKATKAN JUMLAH DATA TRAINING
-# (Contoh: dari 2170 → bertambah 30 kali lipat variasi gambar)
-# --------------------------------------------------
-augmentation_factor = 30  # kamu bisa sesuaikan dengan tingkat variasi yang digunakan
-augmented_train_total = train_total + (train_total * augmentation_factor)
-
-print("=== PERKIRAAN JUMLAH DATASET SETELAH AUGMENTASI ===")
-print(f"Train (setelah augmentasi): {augmented_train_total:,} data")
-print(f"Valid (tetap): {val_total} data")
-print(f"Test (tetap):  {test_total} data")
-print(f"TOTAL (setelah augmentasi): {augmented_train_total + val_total + test_total:,} data\n")
+import tensorflow as tf
 
 # --------------------------------------------------
 # Path Dataset
@@ -64,10 +20,20 @@ val_dir = os.path.join(base_dir, 'valid')
 test_dir = os.path.join(base_dir, 'test')
 
 # --------------------------------------------------
-# Data Preprocessing (Normalisasi + Augmentasi)
+# Inisialisasi YOLOv8 (untuk deteksi daun)
 # --------------------------------------------------
-img_size = (150, 150)
+yolo_model = YOLO('yolov8n.pt')
+
+# --------------------------------------------------
+# Preprocessing Data
+# --------------------------------------------------
+img_size = (224, 224)
 batch_size = 32
+
+def ensure_rgb(x):
+    if x.shape[-1] == 1:
+        x = tf.image.grayscale_to_rgb(x)
+    return x
 
 train_datagen = ImageDataGenerator(
     rescale=1./255,
@@ -78,32 +44,24 @@ train_datagen = ImageDataGenerator(
     zoom_range=0.3,
     horizontal_flip=True,
     brightness_range=[0.8, 1.2],
-    fill_mode='nearest'
+    fill_mode='nearest',
+    preprocessing_function=ensure_rgb
 )
 
-val_datagen = ImageDataGenerator(rescale=1./255)
-test_datagen = ImageDataGenerator(rescale=1./255)
+val_datagen = ImageDataGenerator(rescale=1./255, preprocessing_function=ensure_rgb)
+test_datagen = ImageDataGenerator(rescale=1./255, preprocessing_function=ensure_rgb)
 
 train_data = train_datagen.flow_from_directory(
-    train_dir,
-    target_size=img_size,
-    batch_size=batch_size,
-    class_mode='categorical'
+    train_dir, target_size=img_size, batch_size=batch_size,
+    class_mode='categorical', color_mode='rgb'
 )
-
 val_data = val_datagen.flow_from_directory(
-    val_dir,
-    target_size=img_size,
-    batch_size=batch_size,
-    class_mode='categorical'
+    val_dir, target_size=img_size, batch_size=batch_size,
+    class_mode='categorical', color_mode='rgb'
 )
-
 test_data = test_datagen.flow_from_directory(
-    test_dir,
-    target_size=img_size,
-    batch_size=batch_size,
-    class_mode='categorical',
-    shuffle=False
+    test_dir, target_size=img_size, batch_size=batch_size,
+    class_mode='categorical', color_mode='rgb', shuffle=False
 )
 
 num_classes = len(train_data.class_indices)
@@ -111,46 +69,20 @@ print(f"\nJumlah kelas: {num_classes}")
 print("Kelas:", train_data.class_indices)
 
 # --------------------------------------------------
-# Arsitektur CNN (Optimized)
+# Arsitektur EfficientNetB0 tanpa pretrained
 # --------------------------------------------------
-model = Sequential([
-    # Blok 1
-    Conv2D(32, (3, 3), activation='relu', padding='same', input_shape=(150, 150, 3)),
-    BatchNormalization(),
-    Conv2D(32, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    MaxPooling2D(2, 2),
-    Dropout(0.2),
+base_model = EfficientNetB0(
+    weights=None,  # 🚀 Ganti jadi None agar tidak error shape mismatch
+    include_top=False,
+    input_shape=(224, 224, 3)
+)
 
-    # Blok 2
-    Conv2D(64, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    Conv2D(64, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    MaxPooling2D(2, 2),
-    Dropout(0.25),
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
+x = Dropout(0.4)(x)
+output = Dense(num_classes, activation='softmax')(x)
 
-    # Blok 3
-    Conv2D(128, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    Conv2D(128, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    MaxPooling2D(2, 2),
-    Dropout(0.3),
-
-    # Blok tambahan
-    Conv2D(256, (3, 3), activation='relu', padding='same'),
-    BatchNormalization(),
-    MaxPooling2D(2, 2),
-    Dropout(0.35),
-
-    Flatten(),
-    Dense(256, activation='relu'),
-    BatchNormalization(),
-    Dropout(0.4),
-
-    Dense(num_classes, activation='softmax')
-])
+model = Model(inputs=base_model.input, outputs=output)
 
 # --------------------------------------------------
 # Kompilasi Model
@@ -165,17 +97,13 @@ model.compile(
 # Callback Penurun Learning Rate Otomatis
 # --------------------------------------------------
 lr_reducer = ReduceLROnPlateau(
-    monitor='val_loss',
-    factor=0.5,
-    patience=3,
-    verbose=1,
-    min_lr=1e-6
+    monitor='val_loss', factor=0.5, patience=3, verbose=1, min_lr=1e-6
 )
 
 # --------------------------------------------------
 # Training
 # --------------------------------------------------
-epochs = 20
+epochs = 25
 history = model.fit(
     train_data,
     validation_data=val_data,
@@ -190,7 +118,7 @@ test_loss, test_acc = model.evaluate(test_data)
 print(f"\nAkurasi pada data test: {test_acc*100:.2f}%")
 
 # --------------------------------------------------
-# Visualisasi
+# Visualisasi Training vs Validasi
 # --------------------------------------------------
 plt.figure(figsize=(12, 4))
 plt.subplot(1, 2, 1)
@@ -213,15 +141,14 @@ plt.tight_layout()
 plt.show()
 
 # --------------------------------------------------
-# Confusion Matrix & Report
+# Evaluasi Detail: Confusion Matrix & Report
 # --------------------------------------------------
 Y_pred = model.predict(test_data)
 y_pred = np.argmax(Y_pred, axis=1)
 
 print("\nLaporan Klasifikasi:")
 print(classification_report(
-    test_data.classes,
-    y_pred,
+    test_data.classes, y_pred,
     target_names=list(test_data.class_indices.keys())
 ))
 
@@ -231,5 +158,5 @@ print(confusion_matrix(test_data.classes, y_pred))
 # --------------------------------------------------
 # Simpan Model
 # --------------------------------------------------
-model.save('sabi_cnn_model_v4.h5')
-print("\nModel CNN disimpan sebagai sabi_cnn_model_v4.h5")
+model.save('sabi_efficientnet_yolo_fixed.h5')
+print("\n✅ Model disimpan sebagai sabi_efficientnet_yolo_fixed.h5")
